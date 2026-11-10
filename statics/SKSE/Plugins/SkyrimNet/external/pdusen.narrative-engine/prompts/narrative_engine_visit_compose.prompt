@@ -40,14 +40,30 @@ Do not introduce facts about {{ player_name }}'s recent activities that
 appear in none of them (recent combats, places {{ player_name }} has
 just been, encounters {{ sender_name }} wasn't part of).
 {% else %}
-Anchor the visit in something concrete from {{ sender_name }}'s recent
-memories (below). The specific matter they've come to discuss should
-grow naturally from what they actually remember.
+No specific memory was handed over for this visit. Do not create a
+reason for it: return the cancel object described under "Output
+Format". A visit without a real reason is worse than no visit.
 {% endif %}
+
+## When to cancel the visit
+Return the cancel object instead of a visit when:
+- no specific memory was handed over (see above);
+- the recent exchanges below show {{ sender_name }} has already raised
+  this same matter with {{ player_name }}, and the memories show nothing
+  new has happened since;
+- a later memory or exchange shows the matter was settled — an apology
+  accepted, a debt paid, a quarrel laughed off, a promise kept — and
+  nothing new has happened since. A settled matter stays settled: do not
+  reopen it, and do not invent a new grievance to replace it;
+- making the visit work would require inventing events, facts or
+  feelings that none of the memories support.
 
 ## Output Format
 Return a JSON object with exactly these four keys. No markdown fences. No
 prose before or after the object.
+
+To cancel the visit, return the four keys with `briefing` and `narration`
+as empty strings, `topic_tag` set to `none` and `mood` set to `neutral`.
 
 - `briefing` — string. Between {{ min_words }} and {{ max_words }} words.
   First-person from {{ sender_name }}'s frame, written as the thought
@@ -61,12 +77,12 @@ prose before or after the object.
   but the Jarl's steward is trying to seize the estate. I need her help
   before the funeral, or the silver goes to the crown."*
 - `narration` — string. **Up to one paragraph** (roughly 60–150 words).
-  Third-person scene narration describing {{ sender_name }} arriving at
-  {{ player_name }}: **where they travelled from**, what motivated the
-  journey, what they mean to discuss, and the emotional weight they're
-  carrying. Naming the origin explicitly (a settlement, a hold, a
-  named landmark — whatever fits {{ sender_name }}'s memories) preserves
-  the sense that this visit cost something to make happen. This is fed
+  Third-person scene narration describing {{ sender_name }} seeking out
+  {{ player_name }}: what moved them to come, what they mean to discuss,
+  and the emotional weight they're carrying. Say that they came looking
+  for {{ player_name }}, without describing the journey — no distances,
+  durations or times of departure, because how far they actually
+  travelled is not known. This is fed
   straight to the dialogue system as scene context — it primes the
   downstream LLM to have {{ sender_name }} speak in character about
   the topic. Reference both {{ sender_name }} and {{ player_name }} by
@@ -84,15 +100,28 @@ prose before or after the object.
   the JSON object.
 - `briefing` MUST be within the word bounds and written in first person
   from {{ sender_name }}'s frame.
-- `narration` MUST be third-person, name both actors, name where
-  {{ sender_name }} travelled from, and stay under 200 words.
+- `narration` MUST be third-person, name both actors, and stay under
+  200 words.
+- These bounds apply to a visit; the cancel object is the only allowed
+  exception.
 
 ## Direction
 The Director wants to **{{ desired_direction }}** narrative tension by
-approximately {{ tension_delta }}/100. The visit's emotional weight
-should suit that direction — `contrite`, `warm`, `mournful`, or
-`businesslike` skew toward lowering; `urgent` or `menacing` skew toward
-raising; `neutral` is genuinely neutral.
+approximately {{ tension_delta }}/100. Raising tension means raising
+stakes, anticipation or urgency — news that changes something, an offer
+with a deadline, a discovery, a request for help, a warning about
+someone else, an event about to happen. It does not mean turning
+{{ sender_name }} against {{ player_name }}. Lowering tension means
+relief, closure, gratitude or quiet news.
+
+Let {{ sender_name }}'s character and history with {{ player_name }}
+decide the tone, and play the feeling as they would actually carry it
+in person: hurt pride, disappointment, a hard bargain, a request, a
+warning, news. Most visits that raise tension are `urgent` or
+`businesslike`; a grievance usually comes as `urgent` — something they
+want settled face to face. Keep intimidation for a visitor who means to
+act against {{ player_name }}. `warm`, `mournful`, `contrite` and
+`businesslike` suit lowering or neutral visits.
 
 Urgency hint from the action selector: **{{ urgency_hint }}**. Treat this
 as one input among several, not a directive.
@@ -111,10 +140,8 @@ visit:
 - The situation is urgent and {{ sender_name }} needs an answer or an
   action now, not on the courier's schedule.
 
-Pick a topic that demands presence: an apology, a warning about a
-mutual acquaintance, a grievance {{ sender_name }} needs to voice in
-person, a plea for help they want to make eye-to-eye, a threat
-delivered face-to-face.
+The matter comes from the memory above; this section only shapes how it
+is delivered in person.
 
 ## Content guidance
 - The visit is about ONE concrete matter.
@@ -122,11 +149,7 @@ delivered face-to-face.
   That matter is the one the memory above raises; do NOT substitute a
   different topic.
 {%- else -%}
-  Pick a broad domain — money, secrets, a warning, an apology, grief, a
-  request, rivalry, social obligation — and invent a specific situation
-  within that domain yourself. Do not pull a topic from any list; come
-  up with one fresh. Anchor it in what {{ sender_name }} actually
-  remembers about {{ player_name }}.
+  There is no handed-over memory, so return the cancel object.
 {%- endif %}
 - Voice should match {{ sender_name }}'s personality and station. If
   they're a merchant, they think like a merchant; if they're a thane,
@@ -147,10 +170,7 @@ The action selector picked {{ sender_name }} (form_id
 most recent player-involving memories, oldest first:
 
 {% if length(sender_memories) == 0 %}
-*No recent player-involving memories on file. Compose from character
-inference and the direction/urgency inputs; make the beat plausible
-for {{ sender_name }}'s known personality even without concrete
-anchoring memories.*
+*No recent player-involving memories on file.*
 {% else %}
 {% for mem in sender_memories %}
 - [{{ mem.type }}, {{ mem.age }}{% if length(mem.emotion) > 0 %}, felt {{ mem.emotion }}{% endif %}{% if length(mem.location) > 0 %}, at {{ mem.location }}{% endif %}] {{ mem.content }}

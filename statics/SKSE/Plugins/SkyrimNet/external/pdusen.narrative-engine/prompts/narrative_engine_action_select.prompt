@@ -20,7 +20,9 @@ arrived at a moment that needs intervention — see the direction and
 approximate magnitude below — and one of the listed actions will move it.
 
 Pick **one** action that best fits the present moment, choose any
-parameters it needs, and return your selection.
+parameters it needs, and return your selection. The magnitude below is an
+upper bound, not a target: choose the smallest move that serves the
+moment.
 
 ## Output Format
 Return a JSON object with exactly three keys. No markdown fences. No prose
@@ -44,6 +46,34 @@ before or after the object.
 - Output strict JSON. No markdown code fences. No prose before or after
   the JSON object.
 - The `action` field MUST exactly match one of the candidate names.
+
+## Choosing a reason
+Look for something that has changed since the person last spoke with
+{{ player_context.player_name }}: news they heard, a consequence of
+something that happened, a request, an offer, a discovery, a step they
+have taken since. Prefer that over going back over an argument they
+already had with {{ player_context.player_name }} face to face — the
+argument happened; what matters now is what it led to.
+
+Spread the story across the people offered. When the recent events
+show one person already reaching out to {{ player_context.player_name }}
+lately, prefer someone else who has their own reason.
+
+When the recent events already carry the moment — a confrontation, a
+deal, a fight or an intimate scene is under way or just ended — the story
+is moving on its own: choose the smallest action offered and the most
+grounded memory over the most dramatic one.
+
+## What moving tension means
+Raising tension means raising stakes, anticipation or urgency — it does
+not mean conflict with {{ player_context.player_name }}. Tension can rise
+through news, an offer or opportunity, a discovery, a request for help,
+a warning about someone else, or an event that is about to happen.
+A grievance usually turns into a demand to settle an account, a hard
+bargain, a warning about where things are heading, or news of what the
+person has decided — in their own character. Keep intimidation for
+someone who means to act against {{ player_context.player_name }}.
+Lowering tension means relief, closure, gratitude or quiet news.
 
 ---
 
@@ -82,8 +112,10 @@ before or after the object.
 
 If you pick this action, choose ONE of the NPCs below to be the letter's
 sender and include their `form_id` as `sender_npc_form_id` inside
-`parameters`. Prefer candidates whose recent memories about the player
-support the tone the moment needs.
+`parameters`. Prefer candidates with a fresh reason to write (see
+"Choosing a reason") whose memories support the tone the moment needs. A
+letter suits news, gratitude, a reaction or an update that does not need
+an answer face to face.
 
 Then pick the ONE numbered memory of theirs that gives them their reason
 to write now, and include its number as `motivating_memory` inside
@@ -104,10 +136,11 @@ the topic you intend must be one the chosen memory carries.
 
 If you pick this action, choose ONE of the NPCs below to be the visitor
 and include their `form_id` as `sender_npc_form_id` inside `parameters`.
-Prefer candidates whose recent memories most naturally motivate an
-in-person visit right now — an unresolved beat, an emotional weight
-that can't survive being written down, or urgent information that
-needs to land face-to-face.
+A visit costs the visitor a journey, so pick one only when the matter
+is worth that journey now: it is time-sensitive, it needs
+{{ player_context.player_name }}'s answer in person, or it cannot be
+trusted to paper. Among the visitors, prefer the one whose reason is
+newest (see "Choosing a reason").
 
 Then pick the ONE numbered memory of theirs that gives them their reason
 to come now, and include its number as `motivating_memory` inside
