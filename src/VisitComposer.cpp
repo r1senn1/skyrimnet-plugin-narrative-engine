@@ -5,24 +5,30 @@
 #include <EventLogUtil.h>
 #include <LLMTextSanitizer.h>
 #include <logger.h>
+#include <MainThread.h>
 #include <NPCVisitBeat.h>
+#include <Region.h>
 #include <SenderCandidatePool.h>
 #include <SenderDialogue.h>
 #include <Settings.h>
 #include <SkyrimNetAPI.h>
 #include <SkyrimNetEvents.h>
+#include <VisitRange.h>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace NarrativeEngine::VisitComposer
 {
@@ -102,7 +108,154 @@ namespace NarrativeEngine::VisitComposer
                 return false;
             }
 
+            // Too far away to drop by. They stay a letter sender.
+            if (!InVisitRange(actor, skipReasonOut))
+                return false;
+
             return true;
+        }
+
+        // Skyrim.esm. Looked up per call: LookupByID is a hash probe, and
+        // the filter runs at most a few dozen times per Director tick.
+        constexpr RE::FormID kPotentialFollowerFaction = 0x0005C84D;
+        constexpr RE::FormID kCurrentFollowerFaction = 0x0005C84E;
+
+        // Last hold the player was resolved in, when, and the hold-less cell
+        // it was taken up for. Interiors from some mods (a bathhouse
+        // "Shower Room", 2026-10-30) carry a location with no hold parent,
+        // and an unknown player hold admits everyone, so a Whiterun bard
+        // walked into Hjaalmarch. Used only when the doors lead nowhere
+        // known either. It is taken up by the first hold-less cell entered
+        // within an hour of the last known hold (fast travel spends game
+        // hours, so an older value is a hold the player may have left) and
+        // then kept for as long as the player stays in that cell, however
+        // long they wait or sleep there. One mutex, since the main and the
+        // plugin thread both update it. Cleared on load.
+        struct LastKnownHold
+        {
+            RE::FormID hold = 0;
+            float atHours = 0.0f;
+            const RE::TESObjectCELL* cell = nullptr;
+        };
+        std::mutex g_lastKnownMutex;
+        LastKnownHold g_lastKnown;
+        constexpr float kLastKnownHoldMaxAgeHours = 1.0f;
+
+        // The player's hold as the main thread last resolved it, and the
+        // cell it was resolved in. RefreshPlayerHold resolves it once per
+        // beat selection, and only when the player's cell has changed; the
+        // plugin-thread walks read it.
+        std::atomic<RE::FormID> g_publishedPlayerHold{0};
+        std::atomic<const RE::TESObjectCELL*> g_publishedPlayerHoldCell{nullptr};
+
+        const RE::TESObjectCELL* PlayerCell()
+        {
+            auto* pc = RE::PlayerCharacter::GetSingleton();
+            return pc ? pc->GetParentCell() : nullptr;
+        }
+
+        float GameHoursNow()
+        {
+            auto* cal = RE::Calendar::GetSingleton();
+            return cal ? cal->GetHoursPassed() : 0.0f;
+        }
+
+        // How many interiors deep to follow load doors: a room inside an
+        // inn inside a city is three hops from the street.
+        constexpr int kMaxInteriorHops = 3;
+
+        // Hold of the exterior the player's interior opens onto, found by
+        // following load doors outward. 0 when none leads anywhere known.
+        // Reads cell reference lists and door handles, hence the token.
+        RE::FormID HoldBehindPlayerDoors(const MainThread::Token&)
+        {
+            const auto* start = PlayerCell();
+            if (!start || !start->IsInteriorCell())
+                return 0;
+
+            std::vector<const RE::TESObjectCELL*> frontier{start};
+            std::set<const RE::TESObjectCELL*> seen{start};
+            for (int hop = 0; hop < kMaxInteriorHops && !frontier.empty(); ++hop) {
+                std::vector<const RE::TESObjectCELL*> next;
+                // Exterior doors are resolved after the walk, outside the
+                // cell's reference lock.
+                std::vector<RE::NiPointer<RE::TESObjectREFR>> exits;
+                for (const auto* cell : frontier) {
+                    cell->ForEachReference([&](RE::TESObjectREFR* ref) {
+                        auto* teleport = ref ? ref->extraList.GetByType<RE::ExtraTeleport>() : nullptr;
+                        auto* data = teleport ? teleport->teleportData : nullptr;
+                        auto linked = data ? data->linkedDoor.get() : RE::NiPointer<RE::TESObjectREFR>{};
+                        auto* linkedCell = linked ? linked->GetParentCell() : nullptr;
+                        if (!linkedCell)
+                            return RE::BSContainer::ForEachResult::kContinue;
+                        if (!linkedCell->IsInteriorCell())
+                            exits.push_back(std::move(linked));
+                        else if (seen.insert(linkedCell).second)
+                            next.push_back(linkedCell);
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    });
+                }
+                for (const auto& exit : exits) {
+                    if (const auto hold = Region::ForReference(exit.get()).holdFormID; hold != 0)
+                        return hold;
+                }
+                frontier = std::move(next);
+            }
+            return 0;
+        }
+
+        // The location chain, else the exterior behind the doors (only with
+        // a main-thread token), else the last hold seen.
+        RE::FormID ResolvePlayerHold(const MainThread::Token* mt)
+        {
+            const auto* cell = PlayerCell();
+            if (const auto hold = Region::ForPlayer().holdFormID; hold != 0) {
+                std::scoped_lock lock(g_lastKnownMutex);
+                g_lastKnown = {hold, GameHoursNow(), nullptr};
+                return hold;
+            }
+            if (const auto hold = mt ? HoldBehindPlayerDoors(*mt) : 0; hold != 0) {
+                if (Settings::Get().debugMode)
+                    logger::debug("VisitComposer: player location has no hold; using {:08X} behind its doors", hold);
+                // Remembered for this cell, so the fallback below agrees.
+                std::scoped_lock lock(g_lastKnownMutex);
+                g_lastKnown = {hold, GameHoursNow(), cell};
+                return hold;
+            }
+            std::scoped_lock lock(g_lastKnownMutex);
+            if (g_lastKnown.hold == 0)
+                return 0;
+            // No cell (a load in progress) never counts as "still in the
+            // same cell", so the age check always applies to it.
+            if (!cell || cell != g_lastKnown.cell) {
+                if (GameHoursNow() - g_lastKnown.atHours > kLastKnownHoldMaxAgeHours)
+                    return 0;
+                if (cell)
+                    g_lastKnown.cell = cell;
+            }
+            if (Settings::Get().debugMode)
+                logger::debug("VisitComposer: player hold unknown; using last known {:08X}", g_lastKnown.hold);
+            return g_lastKnown.hold;
+        }
+
+        RE::FormID PlayerHoldForRange()
+        {
+            const auto* cell = PlayerCell();
+            if (cell && cell == g_publishedPlayerHoldCell.load())
+                return g_publishedPlayerHold.load();
+            // The player has moved since RefreshPlayerHold (or it has not
+            // run): everything but the door walk.
+            return ResolvePlayerHold(nullptr);
+        }
+
+        bool IsFollowerType(RE::Actor* actor)
+        {
+            for (const auto id : {kPotentialFollowerFaction, kCurrentFollowerFaction}) {
+                auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(id);
+                if (faction && actor->IsInFaction(faction))
+                    return true;
+            }
+            return false;
         }
 
         // Count whitespace-separated words. Cheap; doesn't need to be
@@ -192,6 +345,63 @@ namespace NarrativeEngine::VisitComposer
     bool IsValidMood(const std::string& mood)
     {
         return ValidMoods().contains(mood);
+    }
+
+    void RefreshPlayerHold(const PluginThread::Token& pt)
+    {
+        const auto& cfg = Settings::Get();
+        if (cfg.visitRangeFollowers == VisitRange::Range::World && cfg.visitRangeOthers == VisitRange::Range::World)
+            return;
+        (void)MainThread::Run(pt, [](const MainThread::Token& mt) {
+            // A cell's hold does not change: resolve only on a new cell.
+            const auto* cell = PlayerCell();
+            if (cell && cell == g_publishedPlayerHoldCell.load())
+                return 0;
+            g_publishedPlayerHold.store(ResolvePlayerHold(&mt));
+            g_publishedPlayerHoldCell.store(cell);
+            return 0;
+        });
+    }
+
+    void ResetPlayerHoldMemory()
+    {
+        {
+            std::scoped_lock lock(g_lastKnownMutex);
+            g_lastKnown = {};
+        }
+        g_publishedPlayerHoldCell.store(nullptr);
+    }
+
+    bool InVisitRange(RE::Actor* actor, std::string* skipReasonOut)
+    {
+        if (!actor)
+            return true;
+
+        const auto& cfg = Settings::Get();
+        // The stock world/world setup needs neither faction nor hold lookups.
+        if (cfg.visitRangeFollowers == VisitRange::Range::World && cfg.visitRangeOthers == VisitRange::Range::World)
+            return true;
+        const bool follower = IsFollowerType(actor);
+        const auto range = follower ? cfg.visitRangeFollowers : cfg.visitRangeOthers;
+        // Skip both hold lookups in the stock world/world setup.
+        if (range == VisitRange::Range::World)
+            return true;
+
+        const auto playerHold = PlayerHoldForRange();
+        const auto senderHold = Region::ForActor(actor).holdFormID;
+        if (VisitRange::Admits(range, playerHold, senderHold))
+            return true;
+
+        if (cfg.debugMode)
+            logger::debug("VisitComposer: {:08X} out of visit range ({}, {}): sender hold {:08X}, player hold {:08X}",
+                          actor->GetFormID(),
+                          follower ? "follower" : "other",
+                          VisitRange::Name(range),
+                          senderHold,
+                          playerHold);
+        if (skipReasonOut)
+            *skipReasonOut = "out-of-range";
+        return false;
     }
 
     std::vector<SenderCandidate> CollectSenderCandidates()

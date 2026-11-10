@@ -50,8 +50,11 @@ namespace NarrativeEngine::SenderDialogue
     // The event types that carry a spoken line. `dialogue_background`
     // is deliberately absent: it is ambient NPC-to-NPC chatter, which
     // the two-party filter would drop anyway, so asking for it only
-    // spends fetch budget on rows that cannot survive.
-    inline constexpr const char* kDialogueEventTypes = "dialogue,dialogue_player_text";
+    // spends fetch budget on rows that cannot survive. The player's voice
+    // lines arrive as `dialogue_player_stt` (same row shape as typed
+    // ones); without them a player who talks by voice had no side of the
+    // conversation in the composer's context.
+    inline constexpr const char* kDialogueEventTypes = "dialogue,dialogue_player_text,dialogue_player_stt";
 
     // Up to `cap` of the most recent two-party exchanges, oldest first,
     // as an array of `{speaker, text, gameTime}`. `speaker` is the

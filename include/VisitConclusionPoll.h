@@ -1,6 +1,7 @@
 #pragma once
 
 #include <IBeat.h>
+#include <PlayerVoiceTurns.h>
 #include <VisitState.h>
 
 #include <cstddef>
@@ -8,6 +9,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // VisitConclusionPoll — cheap-signal-gated natural-conclusion LLM
@@ -86,6 +88,17 @@ namespace NarrativeEngine::VisitConclusionPoll
     // and stamps the last-turn game-time. Also usable from
     // outside for tests / debug UI.
     void RegisterSpeechTurn();
+
+    // The player's spoken lines to `senderName` since `sinceGameTime`,
+    // read from SkyrimNet's event stream: PublicGetRecentDialogue does
+    // not return speech-to-text turns, so without these a player who
+    // talks by voice looks silent to the poll and the turn sampler. See
+    // PlayerVoiceTurns.h. Lines already in `alreadySeen` (sanitized
+    // player text from the dialogue endpoint) are left out. Empty when
+    // SkyrimNet is unavailable or `sinceGameTime` is not set.
+    std::vector<PlayerVoiceTurns::Turn> RecentPlayerVoiceTurns(std::string_view senderName,
+                                                               double sinceGameTime,
+                                                               const std::vector<std::string>& alreadySeen);
 
     // Reads the current failure counter (for the hard-abort logic
     // in Step 15).

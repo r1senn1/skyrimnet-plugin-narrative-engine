@@ -8,9 +8,11 @@
 #include <DebugNotify.h>
 #include <EngineUtils.h>
 #include <FineRoads.h>
+#include <LLMTextSanitizer.h>
 #include <LocationKeywords.h>
 #include <logger.h>
 #include <MainThread.h>
+#include <PlayerVoiceTurns.h>
 #include <QuestUtils.h>
 #include <SenderCandidatePool.h>
 #include <SenderCooldownTable.h>
@@ -47,6 +49,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace NarrativeEngine
 {
@@ -235,6 +238,10 @@ namespace NarrativeEngine
         // Discuss sampler cursor and sender FormID cached at
         // Salutation → Discuss.
         std::atomic<double> g_lastSampledEventGameTime = 0.0;
+        // Voice turns keep their own cursor: they are sampled less often
+        // than dialogue, and a reply sampled first must not move the
+        // dialogue cursor past a voice line that has not been read yet.
+        std::atomic<double> g_lastSampledVoiceGameTime = 0.0;
         std::atomic<RE::FormID> g_discussSenderFormID = 0;
 
         // One-shot latch for the Salutation "narration + SetStage(Discuss)"
@@ -365,6 +372,9 @@ namespace NarrativeEngine
 
         // Discuss speech sampler recent-lines cap.
         constexpr int kDiscussSpeechSamplePerTick = 20;
+        // The voice-line event query runs on every Nth speech-sampler tick.
+        constexpr int kVoiceSampleEveryNTicks = 5;
+        std::atomic<int> g_voiceSampleTick{0};
 
         void ResetSessionState()
         {
@@ -387,6 +397,8 @@ namespace NarrativeEngine
             g_combatElapsedSec.store(0.0, std::memory_order_release);
             g_lastAccumulatorSampleRealSec.store(0.0, std::memory_order_release);
             g_lastSampledEventGameTime.store(0.0, std::memory_order_release);
+            g_voiceSampleTick.store(0, std::memory_order_release);
+            g_lastSampledVoiceGameTime.store(0.0, std::memory_order_release);
             g_discussSenderFormID.store(0, std::memory_order_release);
             g_runningTickCount = 0;
             g_runningTaskInFlight.store(false, std::memory_order_release);
@@ -541,6 +553,8 @@ namespace NarrativeEngine
                     *skipReasonOut = "no-current-location";
                 return false;
             }
+            if (!VisitComposer::InVisitRange(actor, skipReasonOut))
+                return false;
             return true;
         }
 
@@ -1088,6 +1102,7 @@ namespace NarrativeEngine
             double maxSeen = lastSeen;
             int newCount = 0;
             bool sawPlayerTurn = false;
+            std::vector<std::string> playerTexts;
             for (const auto& entry : parsed) {
                 if (!entry.is_object())
                     continue;
@@ -1117,13 +1132,51 @@ namespace NarrativeEngine
                         continue;
                     }
                 }
-                if (isPlayerTurn)
+                if (isPlayerTurn) {
                     sawPlayerTurn = true;
+                    // Sanitized like the voice turns it is compared with.
+                    if (auto it = entry.find("data"); it != entry.end() && it->is_string())
+                        playerTexts.push_back(LLMTextSanitizer::Sanitize(it->get<std::string>()));
+                }
                 VisitConclusionPoll::RegisterSpeechTurn();
                 ++newCount;
             }
+            // Spoken player lines are missing from GetRecentDialogue; count
+            // them from the event stream so talking by voice resets the
+            // silence gate the way typing does.
+            // Throttled: the event query is global, and a voice line a few
+            // seconds late still resets a 120 s silence gate in time.
+            int voiceCount = 0;
+            // A load mid-visit leaves the cursor at 0, and lines before the
+            // load are not this conversation: start counting from now.
+            if (g_lastSampledVoiceGameTime.load() <= 0.0) {
+                if (auto* cal = RE::Calendar::GetSingleton())
+                    g_lastSampledVoiceGameTime.store(static_cast<double>(cal->GetHoursPassed()) * 3600.0);
+            }
+            const double voiceLastSeen = g_lastSampledVoiceGameTime.load();
+            double voiceMaxSeen = voiceLastSeen;
+            std::vector<PlayerVoiceTurns::Turn> voiceTurns;
+            if ((g_voiceSampleTick.fetch_add(1) + 1) % kVoiceSampleEveryNTicks == 0)
+                voiceTurns = VisitConclusionPoll::RecentPlayerVoiceTurns(senderName, voiceLastSeen, playerTexts);
+            for (const auto& turn : voiceTurns) {
+                if (turn.gameTime <= voiceLastSeen)
+                    continue;
+                if (turn.gameTime > voiceMaxSeen)
+                    voiceMaxSeen = turn.gameTime;
+                sawPlayerTurn = true;
+                VisitConclusionPoll::RegisterSpeechTurn();
+                ++newCount;
+                ++voiceCount;
+            }
+            if (voiceCount > 0 && Settings::Get().debugMode) {
+                logger::debug("NPCVisitBeat[DISCUSS]: counted {} spoken player line(s) from the event stream",
+                              voiceCount);
+            }
             if (maxSeen > lastSeen) {
                 g_lastSampledEventGameTime.store(maxSeen);
+            }
+            if (voiceMaxSeen > voiceLastSeen) {
+                g_lastSampledVoiceGameTime.store(voiceMaxSeen);
             }
             if (newCount > 0 && Settings::Get().debugMode) {
                 logger::debug("NPCVisitBeat[DISCUSS]: sampled {} new dialogue turn(s) "
@@ -1928,6 +1981,7 @@ namespace NarrativeEngine
                         // so we don't count pre-Salutation dialogue.
                         if (auto* cal = RE::Calendar::GetSingleton()) {
                             g_lastSampledEventGameTime.store(static_cast<double>(cal->GetHoursPassed()) * 3600.0);
+                            g_lastSampledVoiceGameTime.store(g_lastSampledEventGameTime.load());
                         }
                         NPCVisitBeat_Cooldowns::OnVisitCompleted(snap.senderFormID);
                         return;
@@ -2774,6 +2828,7 @@ namespace NarrativeEngine
             }
             g_senderCooldowns.Clear();
             g_senderMemoryWatermarks.Clear();
+            VisitComposer::ResetPlayerHoldMemory();
         }
     } // namespace NPCVisitBeat_Persistence
 } // namespace NarrativeEngine

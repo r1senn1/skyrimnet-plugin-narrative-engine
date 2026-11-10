@@ -91,6 +91,25 @@ namespace NarrativeEngine::VisitComposer
     // build that follows it.
     inline constexpr int kSenderCandidateRenderCap = 12;
 
+    // The [Beats] sVisitRange* gate, shared by CollectSenderCandidates'
+    // filter and NPCVisitBeat's CountViable twin so the two agree.
+    // Followers (vanilla PotentialFollowerFaction / CurrentFollowerFaction)
+    // use sVisitRangeFollowers, everyone else sVisitRangeOthers. Holds
+    // come from Region::ForPlayer / ForActor — the same off-main read
+    // shape as the ambush eligibility path. On false, `skipReasonOut`
+    // (when given) is "out-of-range". Null actor returns true; the
+    // caller's own null check reports it.
+    bool InVisitRange(RE::Actor* actor, std::string* skipReasonOut);
+
+    // Resolve the player's hold on the main thread, door walk included,
+    // and publish it for the visit-range checks of this beat selection,
+    // which run on the plugin thread. A no-op when both ranges are world.
+    void RefreshPlayerHold(const PluginThread::Token& pt);
+
+    // Forget the player's last known hold and the per-walk cache, so a
+    // loaded save never inherits a hold from the session before it.
+    void ResetPlayerHoldMemory();
+
     // Serialize a candidate list into the JSON shape the beat-select
     // prompt consumes: [{form_id (hex str), name, engagement_score,
     // last_interacted_at, memories}]. Mirrors
