@@ -524,37 +524,39 @@ TEST_CASE("VisitConclusionPoll asks the model whether it is over", "[VisitConclu
     {
         // A quiet player keeps the gate's condition true, so without a guard
         // every tick fires another poll and the verdicts come back together:
-        // 2026-11-10, three nudges in 0.2 s ended a visit.
+        // 2026-11-10, three nudges in 0.2 s ended a visit. Fired on a worker
+        // because the held fake blocks its caller until the answer arrives.
         fake.holdPromptAnswer = true;
         Poll::RegisterSpeechTurn();
         Poll::RegisterSpeechTurn();
         REQUIRE(Poll::GateTick());
         std::atomic<bool> answeredLater{false};
-        Poll::FirePoll([&](std::optional<Poll::PollVerdict>) { answeredLater = true; });
+        std::thread worker{[&] { Poll::FirePoll([&](std::optional<Poll::PollVerdict>) { answeredLater = true; }); }};
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (fake.sendPromptCalls == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
         Poll::RegisterSpeechTurn();
         Poll::RegisterSpeechTurn();
-        // The callback reads this scope, so no leaf may leave before it ran.
-        const auto release = [&] {
-            fake.holdPromptAnswer = false;
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-            while (!answeredLater && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds{5});
-            }
-            REQUIRE(answeredLater);
-        };
 
         SECTION("should keep the gate shut")
         {
             REQUIRE_FALSE(Poll::GateTick());
-            release();
         }
 
         SECTION("should reopen it once the model has answered")
         {
-            release();
+            fake.holdPromptAnswer = false;
+            worker.join();
+            REQUIRE(answeredLater);
             Poll::RegisterSpeechTurn();
             Poll::RegisterSpeechTurn();
             REQUIRE(Poll::GateTick());
+        }
+
+        fake.holdPromptAnswer = false;
+        if (worker.joinable()) {
+            worker.join();
         }
     }
 
