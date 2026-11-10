@@ -34,12 +34,22 @@ Do not introduce facts about {{ player_name }}'s recent activities that
 appear in none of them (recent combats, places {{ player_name }} has
 just been, encounters {{ sender.name }} wasn't part of).
 {% else %}
-Your recent memories about {{ player_name }} are listed at the bottom of
-this prompt. Ground the letter in what you actually remember — a specific
-event, your feelings about it, something you want them to know now that
-some time has passed. Anchor the letter in something concrete from those
-memories.
+No specific memory was handed over for this letter. Do not create a
+reason to write: return the cancel object described under "Output
+Format". A letter without a real reason is worse than no letter.
 {% endif %}
+
+## When to cancel the letter
+Return the cancel object instead of a letter when:
+- no specific memory was handed over (see above);
+- your recent exchanges below show you have already told {{ player_name }}
+  about this same matter, and your memories show nothing new since;
+- a later memory or exchange shows the matter was settled — an apology
+  accepted, a debt paid, a quarrel laughed off, a promise kept — and
+  nothing new has happened since. A settled matter stays settled: do not
+  reopen it, and do not invent a new grievance to replace it;
+- writing it would require inventing events, facts or feelings that none
+  of your memories support.
 
 {{ render_template("submodules\\system_head\\0010_setting") }}
 
@@ -53,6 +63,10 @@ memories.
 Return a JSON object with exactly these five keys. No markdown fences. No
 prose before or after the object.
 
+To cancel the letter, return the five keys with `letter_label` set to
+`none`, `body` as an empty string, `mood` set to `neutral`, `topic_tag`
+set to `none` and `tags` as an empty array.
+
 - `letter_label` — string, **≤ 24 characters** including spaces and
   punctuation. This is the display name of the physical letter as an
   inventory item — what {{ player_name }} will read on the entry
@@ -62,8 +76,10 @@ prose before or after the object.
   message"`. No quotation marks, no trailing punctuation. The
   24-character cap is a hard engine limit; longer strings get silently
   truncated to garbled mid-word cuts. Count carefully.
-- `body` — string. The letter text. Between {{ min_words }} and
-  {{ max_words }} words. Plain text only — no HTML, no font tags, no
+- `body` — string. The letter text. Aim for about 100 to 140 words — a
+  short personal letter, not an essay. It must stay between
+  {{ min_words }} and {{ max_words }} words; longer letters are thrown
+  away unread. Plain text only — no HTML, no font tags, no
   markdown, no surrounding quotes. Newlines between paragraphs are fine.
   Sign off with your name on its own line at the end.
 - `mood` — string. One of: `warm`, `neutral`, `urgent`, `menacing`,
@@ -84,15 +100,26 @@ prose before or after the object.
 - Output strict JSON. No markdown code fences. No prose before or after
   the JSON object.
 - `letter_label` MUST be ≤ 24 characters.
-- `body` MUST be within the word bounds.
+- `body` MUST be within the word bounds — the cancel object is the only
+  allowed exception.
 - `tags` MUST be a JSON array of strings (empty array allowed).
 
 ## Direction
 The Director wants to **{{ desired_direction }}** narrative tension by
-approximately {{ tension_delta }}/100. The letter's emotional weight
-should suit that direction — warm / mournful / businesslike skew toward
-lowering; urgent / menacing skew toward raising; neutral is genuinely
-neutral.
+approximately {{ tension_delta }}/100. Raising tension means raising
+stakes, anticipation or urgency — news that changes something, an offer
+with a deadline, a discovery, a request for help, a warning about
+someone else, an event about to happen. It does not mean turning against
+{{ player_name }}. Lowering tension means relief, closure, gratitude or
+quiet news.
+
+Let your own character and history with {{ player_name }} decide the
+tone, and write the feeling as you would actually put it on paper: hurt
+pride, disappointment, a hard bargain, a request, a warning, news. Most
+letters that raise tension are `urgent` or `businesslike`; a grievance
+usually reads as `urgent` — an account you want settled. Keep
+intimidation for a letter whose writer means to act against
+{{ player_name }}. `warm` and `mournful` suit lowering letters.
 
 Urgency hint from the action selector: **{{ urgency_hint }}**. Treat this
 as one input among several, not a directive.
@@ -100,11 +127,7 @@ as one input among several, not a directive.
 ## Content guidance
 - The letter is about ONE concrete matter.
 {% if not has_motivating_memory -%}
-  Pick a broad domain — money, work, news, a request, a grievance,
-  gossip, social obligation — and invent a specific situation within
-  that domain yourself. Do not pull a topic from any list; come up with
-  one fresh. Anchor it in what you actually know about {{ player_name }}
-  from the memories below.
+  There is no handed-over memory, so return the cancel object.
 {%- else -%}
   That matter is the one the memory above raises; do NOT
   substitute a different topic. Use the memories and dialogue below to
@@ -150,7 +173,7 @@ Think of it as a snapshot of your state of mind, fixed in time. The
 player reads it, your voice lands, and they move on.
 ## Your recent memories about {{ player_name }}
 
-{% if length(sender.memories) == 0 %}*No recent player-involving memories on file. Draw on what a person like you would plausibly know about {{ player_name }} from your station, location, and role — but keep the letter's specifics grounded rather than inventing dramatic backstory.*
+{% if length(sender.memories) == 0 %}*No recent player-involving memories on file.*
 {% else %}{% for mem in sender.memories %}- [{{ mem.type }}, {{ mem.age }}{% if length(mem.emotion) > 0 %}, felt {{ mem.emotion }}{% endif %}{% if length(mem.location) > 0 %}, at {{ mem.location }}{% endif %}] {{ mem.content }}
 {% endfor %}{% endif %}
 
