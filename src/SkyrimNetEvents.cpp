@@ -124,7 +124,8 @@ namespace NarrativeEngine::SkyrimNetEvents
                 } else {
                     text = speaker + ": \"" + dialogue + "\"";
                 }
-            } else if (type == "dialogue_player_text") {
+            } else if (type == "dialogue_player_text" || type == "dialogue_player_stt") {
+                // Typed and spoken player lines share one row shape.
                 const std::string speaker = str("speaker");
                 const std::string listener = str("listener");
                 const std::string dialogue = str("dialogue");

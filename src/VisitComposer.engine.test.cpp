@@ -4,7 +4,9 @@
 #include <ConfiguredSettings.h>
 #include <EngineMock.h>
 #include <FakeSkyrimNet.h>
+#include <HoldGrid.h>
 #include <NPCVisitBeat.h>
+#include <Region.h>
 #include <SkyrimNetAPI.h>
 
 #include <nlohmann/json.hpp>
@@ -647,6 +649,149 @@ TEST_CASE("VisitComposer tells the model only what the visitor knows", "[VisitCo
             REQUIRE(answered);
             REQUIRE(context["has_motivating_memory"] == false);
             REQUIRE(context["motivating_memory"].empty());
+        }
+    }
+}
+
+TEST_CASE("VisitComposer keeps visitors to the range the INI sets", "[VisitComposer][engine]")
+{
+    // Two holds on one map: Whiterun to the west of cell 0, Falkreath to the
+    // east, and open ground beyond each that the grid attributes to the
+    // nearer one. The player stands in Whiterun; Ysolda is placed either down
+    // the road in Whiterun or far off in Falkreath.
+    EngineMock engine;
+    const ConfiguredSettings settings{"[General]\nbDebugMode=0\n[HoldGrid]\nbHoldGridDebugBitmap=0\n"
+                                      "[Beats]\nsVisitRangeFollowers=world\nsVisitRangeOthers=hold\n"};
+    auto& fake = FakeState();
+    REQUIRE(SkyrimNet::Initialize());
+    fake.Reset();
+    NarrativeEngine::NPCVisitBeat_Persistence::OnRevert();
+
+    constexpr std::uint32_t kTamriel = 0x0000003Cu;
+    constexpr std::uint32_t kWhiterunHold = 0x00016BE4u;
+    constexpr std::uint32_t kFalkreathHold = 0x0001680Fu;
+    constexpr float kCellUnits = 4096.0f;
+
+    (void)engine.AddKeyword("LocTypeHold");
+    auto* space = engine.AddWorldSpace(kTamriel, "Tamriel");
+    const auto seedHold = [&](std::uint32_t formID, const char* name, const char* editorID, std::int16_t westCell) {
+        auto* hold = engine.AddLocation(formID, name, {"LocTypeHold"}, editorID);
+        auto* territory = engine.AddLocation(formID + 0x00100000u, "Somewhere In It", {});
+        engine.SetLocationParent(territory, hold);
+        for (std::int16_t dx = 0; dx < 3; ++dx) {
+            for (std::int16_t dy = 0; dy < 3; ++dy) {
+                (void)engine.AddExteriorCell(
+                    space, static_cast<std::int16_t>(westCell + dx), static_cast<std::int16_t>(dy - 1), territory);
+            }
+        }
+    };
+    seedHold(kWhiterunHold, "Whiterun Hold", "WhiterunHoldLocation", -3);
+    seedHold(kFalkreathHold, "Falkreath Hold", "FalkreathHoldLocation", 0);
+    // Unnamed ground on either side, for Ysolda to stand on.
+    auto* nearCell = engine.AddExteriorCell(space, -10, 0, nullptr);
+    auto* farCell = engine.AddExteriorCell(space, 10, 0, nullptr);
+    NarrativeEngine::HoldGrid::Initialize();
+    engine.StandPlayerInCell(space, -1, 0);
+    REQUIRE(NarrativeEngine::HoldGrid::LookupPlayer() == kWhiterunHold);
+
+    auto* ysolda = engine.AddActor(kYsolda);
+    auto* base = engine.AddNPC(0x0001A6A2u);
+    base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kUnique);
+    engine.SetActorBase(ysolda, base);
+    engine.world.playerHasLocation = true;
+    SetJson(fake.engagementJson, "[" + EngagementRow(kYsolda, "Ysolda") + "]");
+    SetJson(fake.memoriesJson, "[" + MemoryRow("She spoke of the mammoth tusk.") + "]");
+
+    const auto standAt = [&](RE::TESObjectCELL* cell, std::int16_t cellX) {
+        ysolda->parentCell = cell;
+        ysolda->data.location = RE::NiPoint3{(static_cast<float>(cellX) + 0.5f) * kCellUnits, 0.5f * kCellUnits, 0.0f};
+    };
+
+    SECTION("when an ordinary NPC lives in the player's hold")
+    {
+        standAt(nearCell, -10);
+
+        SECTION("should let them visit")
+        {
+            std::string reason;
+            REQUIRE(VisitComposer::InVisitRange(ysolda, &reason));
+            REQUIRE(VisitComposer::CollectSenderCandidates().size() == 1);
+        }
+    }
+
+    SECTION("when an ordinary NPC lives in another hold")
+    {
+        standAt(farCell, 10);
+
+        SECTION("should leave them to write instead")
+        {
+            std::string reason;
+            REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, &reason));
+            REQUIRE(reason == "out-of-range");
+            REQUIRE(VisitComposer::CollectSenderCandidates().empty());
+        }
+    }
+
+    SECTION("when a potential follower lives in another hold")
+    {
+        standAt(farCell, 10);
+        auto* potentialFollowers = engine.AddFaction(0x0005C84Du, "PotentialFollowerFaction");
+        engine.SetFactionRank(ysolda, potentialFollowers, 0);
+
+        SECTION("should let them visit from anywhere")
+        {
+            // Followers roam the province anyway; a call from one is no stretch.
+            REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+
+        SECTION("should hold them to the hold too when the INI says so")
+        {
+            const ConfiguredSettings strict{"[General]\nbDebugMode=0\n"
+                                            "[Beats]\nsVisitRangeFollowers=hold\nsVisitRangeOthers=hold\n"};
+            REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+    }
+
+    SECTION("when the INI does not mention a range")
+    {
+        standAt(farCell, 10);
+        const ConfiguredSettings stock{"[General]\nbDebugMode=0\n"};
+
+        SECTION("should keep the stock behaviour and let anyone visit")
+        {
+            REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+    }
+    SECTION("when the player then steps into an interior whose location names no hold")
+    {
+        // The 2026-10-30 case: a mod bathhouse whose location has no hold
+        // parent. An unknown player hold used to admit everyone, so a
+        // Whiterun-hold bard walked into Hjaalmarch. The hold last seen
+        // stands in for it, off the main thread too.
+        standAt(farCell, 10);
+        REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, nullptr)); // seen in Whiterun first
+        // Indoors: out of the grid, and the fabricated location has no
+        // hold parent, so Region::ForPlayer now answers 0.
+        engine.world.cellIsInterior = true;
+        REQUIRE(NarrativeEngine::Region::ForPlayer().holdFormID == 0);
+
+        SECTION("should still keep a sender from another hold out")
+        {
+            std::string reason;
+            REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, &reason));
+            REQUIRE(reason == "out-of-range");
+        }
+
+        SECTION("should still let a sender from the last hold in")
+        {
+            standAt(nearCell, -10);
+            REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+
+        SECTION("should not carry the hold over a load")
+        {
+            NarrativeEngine::NPCVisitBeat_Persistence::OnRevert();
+            REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
         }
     }
 }

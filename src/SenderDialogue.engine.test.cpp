@@ -336,7 +336,7 @@ TEST_CASE("SenderDialogue::Fetch orders and bounds what it returns", "[SenderDia
 
         SECTION("should ask only for the event types that carry a spoken line")
         {
-            REQUIRE(std::string{fake.lastEventFilter} == "dialogue,dialogue_player_text");
+            REQUIRE(std::string{fake.lastEventFilter} == "dialogue,dialogue_player_text,dialogue_player_stt");
         }
 
         SECTION("should scope the query to the sender")

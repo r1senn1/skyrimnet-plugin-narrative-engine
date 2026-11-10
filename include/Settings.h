@@ -1,5 +1,7 @@
 #pragma once
 
+#include <VisitRange.h>
+
 #include <array>
 
 #include <cstdint>
@@ -644,6 +646,14 @@ namespace NarrativeEngine::Settings
         // real-time cooldown, which still applies on top. 0 disables.
         // Persists via the beat's own co-save record.
         int visitBeatCooldownGameHours = 24;
+
+        // [Beats] sVisitRangeFollowers / sVisitRangeOthers — how far away
+        // a visit sender may be: world (anywhere) or hold (the player's
+        // current hold). "Followers" are members of the vanilla
+        // PotentialFollowerFaction or CurrentFollowerFaction. A bad value
+        // keeps the default and is logged. See VisitRange.h.
+        VisitRange::Range visitRangeFollowers = VisitRange::Range::World;
+        VisitRange::Range visitRangeOthers = VisitRange::Range::World;
 
         // [Actions] — state machine timing
         // Salutation timeout: seconds after Start before rollback if the sender

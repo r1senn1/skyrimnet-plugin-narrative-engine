@@ -544,6 +544,21 @@ namespace NarrativeEngine::Settings
             dst.visitBeatCooldownGameHours = static_cast<int>(
                 ini.GetLongValue("Beats", "iVisitBeatCooldownGameHours", dst.visitBeatCooldownGameHours));
 
+            // Absent keys keep the default; a word we do not know keeps it too,
+            // loudly, so a typo does not silently change who may visit.
+            const auto readVisitRange = [&ini](const char* key, VisitRange::Range& out) {
+                const char* raw = ini.GetValue("Beats", key, nullptr);
+                if (!raw)
+                    return;
+                if (const auto parsed = VisitRange::Parse(raw)) {
+                    out = *parsed;
+                } else {
+                    logger::warn("Settings: {}='{}' is not world/hold; keeping {}", key, raw, VisitRange::Name(out));
+                }
+            };
+            readVisitRange("sVisitRangeFollowers", dst.visitRangeFollowers);
+            readVisitRange("sVisitRangeOthers", dst.visitRangeOthers);
+
             dst.visitApproachTimeoutSeconds = static_cast<int>(
                 ini.GetLongValue("Beats", "iVisitApproachTimeoutSeconds", dst.visitApproachTimeoutSeconds));
             dst.visitSalutationApproachDistanceUnits = static_cast<int>(ini.GetLongValue(
@@ -746,6 +761,10 @@ namespace NarrativeEngine::Settings
         // player has opened the MCM page). The universal cascade honors
         // *every* recognized key in the MCM INI — not just [Dashboard].
         ApplyMcmOverride();
+
+        logger::info("Settings: visit range followers={} others={}",
+                     VisitRange::Name(g_config.visitRangeFollowers),
+                     VisitRange::Name(g_config.visitRangeOthers));
 
         if (g_config.debugMode) {
             logger::info("Settings: debug mode ON");

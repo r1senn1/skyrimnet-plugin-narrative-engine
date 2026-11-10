@@ -1248,7 +1248,7 @@ namespace NarrativeEngine::BeatSystem
         //   * LetterComposer / VisitComposer CollectSenderCandidates —
         //     same shape as the IsAvailable path (SenderCandidatePool
         //     build).
-        BeatSelectPrep BuildBeatSelectPrep(const PluginThread::Token&,
+        BeatSelectPrep BuildBeatSelectPrep(const PluginThread::Token& pt,
                                            const Snapshot& snapshot,
                                            PhaseTracker::Direction direction,
                                            int tensionDelta,
@@ -1261,6 +1261,11 @@ namespace NarrativeEngine::BeatSystem
                 prep.blockedReason = blockedBy;
                 return prep;
             }
+
+            // Before any visit-range check below (IsAvailable's count, the
+            // candidate walk), which run here, off the main thread. Cheap
+            // unless the player's cell changed since the last selection.
+            VisitComposer::RefreshPlayerHold(pt);
 
             const BeatPolarity desired =
                 (direction == PhaseTracker::Direction::Raise) ? BeatPolarity::Raise : BeatPolarity::Lower;
