@@ -1048,7 +1048,7 @@ TEST_CASE("SenderCandidatePool::Build reads EditorIDs powerofthree's Tweaks reta
 
         SECTION("should not count the courier for availability either")
         {
-            REQUIRE(Pool::CountViable(nullptr, 2) == 1);
+            REQUIRE(Pool::CountViable(nullptr, 2, kRenderCap) == 1);
         }
     }
 
