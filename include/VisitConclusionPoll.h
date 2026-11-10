@@ -89,6 +89,11 @@ namespace NarrativeEngine::VisitConclusionPoll
     // outside for tests / debug UI.
     void RegisterSpeechTurn();
 
+    // Starts a fresh silence window without counting a speech turn. The
+    // verdict handler calls it after a nudge, so the next nudge needs a
+    // whole further silence limit of quiet, not just the next verdict.
+    void ResetSilence();
+
     // The player's spoken lines to `senderName` since `sinceGameTime`,
     // read from SkyrimNet's event stream: PublicGetRecentDialogue does
     // not return speech-to-text turns, so without these a player who

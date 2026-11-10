@@ -27,6 +27,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -140,6 +141,27 @@ namespace NarrativeEngine::VisitComposer
         std::mutex g_lastKnownMutex;
         LastKnownHold g_lastKnown;
         constexpr float kLastKnownHoldMaxAgeHours = 1.0f;
+
+        // The hold each candidate was last seen in. An NPC standing in a
+        // hold-less interior resolves to no hold at all, and an unknown hold
+        // admits them from anywhere, so the hold they were last known in
+        // stands in for it. Filled by every walk, since the walk covers the
+        // whole pool each Director tick; cleared on load.
+        std::mutex g_senderHoldMutex;
+        std::unordered_map<RE::FormID, RE::FormID> g_lastKnownSenderHold;
+
+        RE::FormID SenderHold(RE::Actor* actor)
+        {
+            const auto id = actor->GetFormID();
+            const auto hold = Region::ForActor(actor).holdFormID;
+            std::scoped_lock lock(g_senderHoldMutex);
+            if (hold != 0) {
+                g_lastKnownSenderHold[id] = hold;
+                return hold;
+            }
+            const auto it = g_lastKnownSenderHold.find(id);
+            return it != g_lastKnownSenderHold.end() ? it->second : 0;
+        }
 
         // The player's hold as the main thread last resolved it, and the
         // cell it was resolved in. RefreshPlayerHold resolves it once per
@@ -369,6 +391,10 @@ namespace NarrativeEngine::VisitComposer
             std::scoped_lock lock(g_lastKnownMutex);
             g_lastKnown = {};
         }
+        {
+            std::scoped_lock lock(g_senderHoldMutex);
+            g_lastKnownSenderHold.clear();
+        }
         g_publishedPlayerHoldCell.store(nullptr);
     }
 
@@ -388,7 +414,7 @@ namespace NarrativeEngine::VisitComposer
             return true;
 
         const auto playerHold = PlayerHoldForRange();
-        const auto senderHold = Region::ForActor(actor).holdFormID;
+        const auto senderHold = SenderHold(actor);
         if (VisitRange::Admits(range, playerHold, senderHold))
             return true;
 

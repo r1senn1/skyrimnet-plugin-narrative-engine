@@ -84,6 +84,15 @@ namespace NarrativeEngine::VisitConclusionPoll
         std::uint32_t g_turnsSinceLastPoll = 0;
         std::atomic<std::uint32_t> g_consecutivePollFailures = 0;
 
+        // A poll is out with the model. While it is, the gate stays shut:
+        // the silence condition stays true after a fire, so without this a
+        // quiet player gets a fresh poll every tick and the verdicts come
+        // back in a burst (3 nudges in 0.2 s ended a visit on 2026-11-10).
+        // The stamp bounds the wait if a callback never returns.
+        constexpr double kPollInFlightMaxRealSeconds = 60.0;
+        bool g_pollInFlight = false;
+        double g_pollInFlightSinceRealSeconds = 0.0;
+
         // Cached snapshot fields captured at Arm-time so the poll
         // doesn't have to re-read them each fire.
         VisitState::Snapshot g_snapshotAtArm{};
@@ -381,6 +390,7 @@ namespace NarrativeEngine::VisitConclusionPoll
         g_silenceRealSeconds = 0.0;
         g_lastGateTickRealSeconds = 0.0;
         g_turnsSinceLastPoll = 0;
+        g_pollInFlight = false;
         g_consecutivePollFailures.store(0);
         logger::info("VisitConclusionPoll: armed (sender=0x{:08X}, topic='{}', mood='{}')",
                      snapshot.senderFormID,
@@ -400,6 +410,7 @@ namespace NarrativeEngine::VisitConclusionPoll
         g_silenceRealSeconds = 0.0;
         g_lastGateTickRealSeconds = 0.0;
         g_turnsSinceLastPoll = 0;
+        g_pollInFlight = false;
         logger::info("VisitConclusionPoll: disarmed");
     }
 
@@ -491,6 +502,13 @@ namespace NarrativeEngine::VisitConclusionPoll
         std::scoped_lock lock(g_mutex);
         if (!g_armed)
             return false;
+        if (g_pollInFlight) {
+            if (RealSecondsNow() - g_pollInFlightSinceRealSeconds < kPollInFlightMaxRealSeconds)
+                return false;
+            logger::warn("VisitConclusionPoll: a poll has been out for over {:.0f}s; letting the gate fire again",
+                         kPollInFlightMaxRealSeconds);
+            g_pollInFlight = false;
+        }
 
         const auto& cfg = Settings::Get();
         const double nowGame = GameSecondsNow();
@@ -541,7 +559,18 @@ namespace NarrativeEngine::VisitConclusionPoll
             // next fire waits for a fresh gate trip.
             g_turnsSinceLastPoll = 0;
             g_lastPollGameSeconds = GameSecondsNow();
+            g_pollInFlight = true;
+            g_pollInFlightSinceRealSeconds = RealSecondsNow();
         }
+        // Every path below reports through `callback`, so the gate reopens
+        // exactly when the poll has an answer (or has failed).
+        callback = [callback = std::move(callback)](std::optional<PollVerdict> verdict) {
+            {
+                std::scoped_lock lock(g_mutex);
+                g_pollInFlight = false;
+            }
+            callback(std::move(verdict));
+        };
 
         if (!SkyrimNetAPI::IsAvailable()) {
             logger::warn("VisitConclusionPoll::FirePoll: SkyrimNet unavailable");
@@ -650,6 +679,14 @@ namespace NarrativeEngine::VisitConclusionPoll
         // accumulator. `g_lastGateTickRealSeconds` deliberately isn't
         // reset — it just marks "when did we last observe a tick" and
         // is used as a delta baseline in GateTick.
+        g_silenceRealSeconds = 0.0;
+    }
+
+    void ResetSilence()
+    {
+        std::scoped_lock lock(g_mutex);
+        if (!g_armed)
+            return;
         g_silenceRealSeconds = 0.0;
     }
 

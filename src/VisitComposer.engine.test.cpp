@@ -794,4 +794,28 @@ TEST_CASE("VisitComposer keeps visitors to the range the INI sets", "[VisitCompo
             REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
         }
     }
+
+    SECTION("when a sender from another hold steps somewhere that names no hold")
+    {
+        // The sender's side of the same gap: a hold-less place resolves to
+        // no hold, and an unknown hold admits, so a far sender who stepped
+        // into a mod interior would have slipped in. Where they were last
+        // seen stands in for it.
+        standAt(farCell, 10);
+        REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, nullptr));
+        ysolda->parentCell = nullptr;
+        ysolda->data.location = RE::NiPoint3{0.0f, 0.0f, 0.0f};
+        REQUIRE(NarrativeEngine::Region::ForActor(ysolda).holdFormID == 0);
+
+        SECTION("should still keep them out")
+        {
+            REQUIRE_FALSE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+
+        SECTION("should let them in again after a load forgets where they were")
+        {
+            NarrativeEngine::NPCVisitBeat_Persistence::OnRevert();
+            REQUIRE(VisitComposer::InVisitRange(ysolda, nullptr));
+        }
+    }
 }

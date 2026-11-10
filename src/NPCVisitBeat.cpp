@@ -1010,6 +1010,9 @@ namespace NarrativeEngine
                          silenceLimit,
                          nextNudge);
             VMDispatchRunSenderAction(g_visitQuest, "ContinueConversation", "");
+            // The nudge is the NPC speaking again: give the player a full
+            // silence window to answer before the next one.
+            VisitConclusionPoll::ResetSilence();
             const int nudgeCap = std::max(1, cfg.visitMaxIgnoreNudges);
             if (nextNudge >= nudgeCap) {
                 logger::info("NPCVisitBeat[DISCUSS]: nudge cap reached ({} >= {}) — "

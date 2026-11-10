@@ -13,6 +13,7 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -288,6 +289,21 @@ TEST_CASE("VisitConclusionPoll notices a silence", "[VisitConclusionPoll][engine
         }
     }
 
+    SECTION("when the visitor has just nudged a silent player")
+    {
+        Poll::TickAccumulator(TickMode::Normal);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+        Poll::TickAccumulator(TickMode::Normal);
+        REQUIRE(Poll::GateTick());
+        Poll::ResetSilence();
+
+        SECTION("should give the player a whole new silence to answer in")
+        {
+            REQUIRE(Poll::SilenceRealSeconds() == 0.0);
+            REQUIRE_FALSE(Poll::GateTick());
+        }
+    }
+
     SECTION("when the player is in a menu or a dialogue view")
     {
         Poll::TickAccumulator(TickMode::Normal);
@@ -501,6 +517,44 @@ TEST_CASE("VisitConclusionPoll asks the model whether it is over", "[VisitConclu
             // Whatever the verdict. Without the reset the gate stays tripped
             // and the poll fires every tick for the rest of the visit.
             REQUIRE_FALSE(Poll::GateTick());
+        }
+    }
+
+    SECTION("when a poll is still out with the model")
+    {
+        // A quiet player keeps the gate's condition true, so without a guard
+        // every tick fires another poll and the verdicts come back together:
+        // 2026-11-10, three nudges in 0.2 s ended a visit.
+        fake.holdPromptAnswer = true;
+        Poll::RegisterSpeechTurn();
+        Poll::RegisterSpeechTurn();
+        REQUIRE(Poll::GateTick());
+        std::atomic<bool> answeredLater{false};
+        Poll::FirePoll([&](std::optional<Poll::PollVerdict>) { answeredLater = true; });
+        Poll::RegisterSpeechTurn();
+        Poll::RegisterSpeechTurn();
+        // The callback reads this scope, so no leaf may leave before it ran.
+        const auto release = [&] {
+            fake.holdPromptAnswer = false;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (!answeredLater && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            REQUIRE(answeredLater);
+        };
+
+        SECTION("should keep the gate shut")
+        {
+            REQUIRE_FALSE(Poll::GateTick());
+            release();
+        }
+
+        SECTION("should reopen it once the model has answered")
+        {
+            release();
+            Poll::RegisterSpeechTurn();
+            Poll::RegisterSpeechTurn();
+            REQUIRE(Poll::GateTick());
         }
     }
 

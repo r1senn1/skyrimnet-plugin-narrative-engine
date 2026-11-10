@@ -63,7 +63,8 @@ namespace NarrativeEngine::PlayerVoiceTurns
             if (dataIt == e.end() || !dataIt->is_object())
                 continue;
 
-            // data.listener (undocumented) or targetActorName (documented).
+            // data.listener (listed for this event type in the SkyrimNet
+            // devkit's WORKFLOW_TRIGGERS.md) or targetActorName.
             // SkyrimNet often fills both only minutes after the line: in
             // the 2026-10-26..30 logs 191 of 257 voice events were first
             // seen with neither. A line still unaddressed during a visit is
