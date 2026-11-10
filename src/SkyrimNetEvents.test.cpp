@@ -333,6 +333,17 @@ TEST_CASE("SkyrimNetEvents::FormatEventsText renders known event types", "[Skyri
                   json::object({{"speaker", "Ysolda"}, {"listener", "Carlotta"}, {"dialogue", "Good morning."}})}});
             REQUIRE(RenderOne(event) == "(player) Ysolda -> Carlotta: \"Good morning.\"");
         }
+
+        SECTION("should render a spoken (speech-to-text) line the same way")
+        {
+            // Before, a voice line fell through to the JSON-dump fallback
+            // and reached the Director as raw {"dialogue":...} text.
+            const json event = json::object(
+                {{"type", "dialogue_player_stt"},
+                 {"data",
+                  json::object({{"speaker", "Ysolda"}, {"listener", "Carlotta"}, {"dialogue", "Good morning."}})}});
+            REQUIRE(RenderOne(event) == "(player) Ysolda -> Carlotta: \"Good morning.\"");
+        }
     }
 
     SECTION("when the event is gamemaster dialogue")

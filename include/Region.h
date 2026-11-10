@@ -66,4 +66,13 @@ namespace NarrativeEngine::Region
 
     // Main-thread. Walks the parent chain of `startLoc`. Null-safe.
     Resolution ForLocation(RE::BGSLocation* startLoc);
+
+    // Same two steps as ForPlayer, for any actor, loaded or not: the
+    // HoldGrid cell under the actor's position when they stand in an
+    // exterior worldspace, else a parent-walk from their current
+    // location. Null-safe.
+    Resolution ForActor(RE::Actor* actor);
+
+    // ForActor's two steps for any reference (a load door, say). Null-safe.
+    Resolution ForReference(RE::TESObjectREFR* ref);
 } // namespace NarrativeEngine::Region

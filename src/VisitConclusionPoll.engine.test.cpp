@@ -514,3 +514,75 @@ TEST_CASE("VisitConclusionPoll asks the model whether it is over", "[VisitConclu
         }
     }
 }
+
+TEST_CASE("VisitConclusionPoll hears the player's spoken replies", "[VisitConclusionPoll][engine]")
+{
+    // SkyrimNet's dialogue endpoint returns typed player lines but not
+    // spoken ones; a player talking by voice looked silent, so the poll
+    // judged a one-sided conversation and the silence gate force-ended the
+    // visit (2026-10-28 and 2026-10-29 logs). Spoken lines come from the
+    // event stream instead.
+    EngineMock engine;
+    const ConfiguredSettings settings{kTurnsOnly};
+    const RunningDispatch dispatch;
+    auto& fake = FakeState();
+    REQUIRE(SkyrimNet::Initialize());
+    fake.Reset();
+    engine.calendar.hoursPassed = 1008.0f; // armed at 3,628,800 game seconds
+    (void)engine.AddActor(kYsolda);
+    engine.placement.actorName = "Ysolda";
+    SetJson(fake.promptResponse, Verdict(false));
+    SetJson(fake.dialogueJson,
+            R"([{"speaker":"npc","npcName":"Ysolda","data":"You owe me an answer.","gameTime":3628810.0},)"
+            R"({"speaker":"npc","npcName":"Ysolda","data":"Well?","gameTime":3628890.0}])");
+    Poll::Disarm();
+    Poll::Arm(SnapshotFor());
+    bool answered = false;
+
+    SECTION("when the player answered by voice between her lines")
+    {
+        SetJson(fake.eventsJson,
+                R"([{"type":"dialogue_player_stt","gameTime":3628850.0,)"
+                R"("data":{"dialogue":"I owe you nothing.","listener":"Ysolda","speaker":"Urzog"}},)"
+                R"({"type":"dialogue_player_stt","gameTime":3600000.0,)"
+                R"("data":{"dialogue":"Said before the visit.","listener":"Ysolda","speaker":"Urzog"}}])");
+        (void)Fire(answered);
+        const auto context = nlohmann::json::parse(std::string{fake.lastContextJson}, nullptr, false);
+        REQUIRE(context.is_object());
+        const auto& lines = context["recent_lines"];
+
+        SECTION("should give the model the spoken line in its place")
+        {
+            REQUIRE(lines.size() == 3);
+            REQUIRE(lines[1]["text"] == "I owe you nothing.");
+            REQUIRE(lines[2]["text"] == "Well?");
+        }
+
+        SECTION("should ask the event stream for voice lines only")
+        {
+            REQUIRE(std::string{fake.lastEventFilter} == "dialogue_player_stt");
+        }
+
+        SECTION("should keep internal timestamps out of the prompt")
+        {
+            REQUIRE_FALSE(lines[0].contains("gameTime"));
+        }
+    }
+
+    SECTION("when the dialogue endpoint already returned the same line")
+    {
+        SetJson(fake.dialogueJson,
+                R"([{"speaker":"npc","npcName":"Ysolda","data":"You owe me an answer.","gameTime":3628810.0},)"
+                R"({"speaker":"player","data":"I owe you nothing.","gameTime":3628850.0}])");
+        SetJson(fake.eventsJson,
+                R"([{"type":"dialogue_player_stt","gameTime":3628850.0,)"
+                R"("data":{"dialogue":"I owe you nothing.","listener":"Ysolda"}}])");
+        (void)Fire(answered);
+        const auto context = nlohmann::json::parse(std::string{fake.lastContextJson}, nullptr, false);
+
+        SECTION("should not show it twice")
+        {
+            REQUIRE(context["recent_lines"].size() == 2);
+        }
+    }
+}

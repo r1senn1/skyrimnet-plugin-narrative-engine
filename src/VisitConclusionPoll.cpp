@@ -1,6 +1,7 @@
 #include <VisitConclusionPoll.h>
 
 #include <EvaluationPipeline.h>
+#include <JsonUtils.h>
 #include <LLMTextSanitizer.h>
 #include <logger.h>
 #include <PhaseTracker.h>
@@ -209,6 +210,8 @@ namespace NarrativeEngine::VisitConclusionPoll
             std::size_t skippedEmptyText = 0;
             std::size_t skippedBystander = 0;
             std::size_t skippedPreDiscuss = 0;
+            std::vector<std::string> playerTexts;
+            double lastRowGameTime = discussStartedAt;
 
             // Chronological (oldest-first) is SkyrimNet's guarantee
             // for GetRecentDialogue. Walk once to filter, then take
@@ -295,7 +298,33 @@ namespace NarrativeEngine::VisitConclusionPoll
                 nlohmann::json line;
                 line["speaker"] = speaker.empty() ? std::string{"?"} : speaker;
                 line["text"] = text;
+                // Kept for the merge with voice turns below; dropped
+                // before the lines reach the prompt.
+                // A row without a time keeps its neighbour's, so the merge
+                // below cannot move it out of SkyrimNet's order.
+                lastRowGameTime = JsonUtils::NumberOr(entry, "gameTime", lastRowGameTime);
+                line["gameTime"] = lastRowGameTime;
+                if (speaker == playerName)
+                    playerTexts.push_back(text);
                 filtered.push_back(std::move(line));
+            }
+
+            // Spoken player lines never come back from GetRecentDialogue;
+            // merge them in from the event stream, in time order.
+            std::size_t voiceAdded = 0;
+            for (auto& turn : RecentPlayerVoiceTurns(senderName, discussStartedAt, playerTexts)) {
+                nlohmann::json line;
+                line["speaker"] = playerName.empty() ? std::string{"?"} : playerName;
+                line["text"] = std::move(turn.text);
+                line["gameTime"] = turn.gameTime;
+                filtered.push_back(std::move(line));
+                ++voiceAdded;
+            }
+            if (voiceAdded > 0) {
+                auto& rows = filtered.get_ref<nlohmann::json::array_t&>();
+                std::stable_sort(rows.begin(), rows.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+                    return a.value("gameTime", 0.0) < b.value("gameTime", 0.0);
+                });
             }
 
             // Take the last recentLinesCap entries so the prompt sees
@@ -304,13 +333,15 @@ namespace NarrativeEngine::VisitConclusionPoll
             const std::size_t keep = static_cast<std::size_t>(recentLinesCap);
             const std::size_t start = filtered.size() > keep ? filtered.size() - keep : 0;
             for (std::size_t i = start; i < filtered.size(); ++i) {
+                filtered[i].erase("gameTime");
                 arr.push_back(std::move(filtered[i]));
             }
 
             logger::info("VisitConclusionPoll::SampleRecentLines: kept {} line(s) for "
-                         "poll context (skipped_empty_text={}, skipped_bystander={}, "
-                         "skipped_pre_discuss={})",
+                         "poll context (voice_turns_added={}, skipped_empty_text={}, "
+                         "skipped_bystander={}, skipped_pre_discuss={})",
                          arr.size(),
+                         voiceAdded,
                          skippedEmptyText,
                          skippedBystander,
                          skippedPreDiscuss);
@@ -590,6 +621,23 @@ namespace NarrativeEngine::VisitConclusionPoll
             g_consecutivePollFailures.fetch_add(1);
             callbackBackup(std::nullopt);
         }
+    }
+
+    std::vector<PlayerVoiceTurns::Turn> RecentPlayerVoiceTurns(std::string_view senderName,
+                                                               double sinceGameTime,
+                                                               const std::vector<std::string>& alreadySeen)
+    {
+        // Global stream (formId 0): SkyrimNet routes a voice line to
+        // whoever it judged the listener, not always the sender's actor.
+        constexpr int kVoiceEventFetch = 24;
+        // An unset watermark (a load mid-visit) would admit every old line.
+        if (sinceGameTime <= 0.0 || !SkyrimNetAPI::IsAvailable() || senderName.empty())
+            return {};
+        const auto raw = SkyrimNetAPI::GetRecentEvents(0, kVoiceEventFetch, PlayerVoiceTurns::kEventType);
+        auto turns = PlayerVoiceTurns::Parse(raw, senderName, sinceGameTime);
+        std::erase_if(
+            turns, [&](const PlayerVoiceTurns::Turn& t) { return PlayerVoiceTurns::IsDuplicate(t.text, alreadySeen); });
+        return turns;
     }
 
     void RegisterSpeechTurn()

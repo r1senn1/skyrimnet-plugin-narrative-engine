@@ -4,6 +4,7 @@
 #include <logger.h>
 
 #include <array>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -103,9 +104,17 @@ namespace NarrativeEngine::Region
         {
             if (!loc)
                 return;
+            // Reached from the plugin thread (visit range, ambush) as well
+            // as the main one.
+            static std::mutex mutex;
             static std::unordered_set<RE::FormID> logged;
             const auto id = loc->GetFormID();
-            if (logged.insert(id).second) {
+            bool first = false;
+            {
+                std::scoped_lock lock(mutex);
+                first = logged.insert(id).second;
+            }
+            if (first) {
                 const char* edid = loc->GetFormEditorID();
                 const char* full = loc->GetFullName();
                 logger::info("Region: hold-level location [0x{:08X}] EditorID='{}' FullName='{}' has no "
@@ -184,5 +193,37 @@ namespace NarrativeEngine::Region
             loc = loc->parentLoc;
         }
         return {};
+    }
+
+    Resolution ForActor(RE::Actor* actor)
+    {
+        auto res = ForReference(actor);
+        // Standing in a mod interior whose location names no hold: where
+        // the editor placed them (their home) still does.
+        if (actor && res.holdFormID == 0)
+            res = ForLocation(actor->GetEditorLocation());
+        return res;
+    }
+
+    Resolution ForReference(RE::TESObjectREFR* ref)
+    {
+        if (!ref) {
+            return {};
+        }
+
+        // Fast path, as in ForPlayer. GetWorldspace answers from the save
+        // cell too, so an unloaded actor out on the tundra still lands in
+        // the grid; interiors have no worldspace and fall through.
+        if (auto* ws = ref->GetWorldspace()) {
+            const auto pos = ref->GetPosition();
+            if (const auto holdFormID = HoldGrid::LookupWorldPosition(ws, pos.x, pos.y); holdFormID != 0) {
+                auto* form = RE::TESForm::LookupByID(holdFormID);
+                if (auto* holdLoc = form ? form->As<RE::BGSLocation>() : nullptr) {
+                    return BuildResolution(holdLoc);
+                }
+            }
+        }
+
+        return ForLocation(ref->GetCurrentLocation());
     }
 } // namespace NarrativeEngine::Region
